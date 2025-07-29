@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 1. Minimal design tokens (only used by .glass) */
+:root {
+  --primary-50: #f0f9ff;
+  --neutral-200: #f8fafc;
+}
+
+/* 2. Glass card */
+.glass {
+  background: linear-gradient(135deg, var(--primary-50) 0%, var(--neutral-200) 80%);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.08);
+  border-radius: 0.75rem;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.glass:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+}
+
+/* 3. Re-usable fade-in */
+@keyframes fade-in-up {
+  0%   { opacity: 0; transform: translateY(1rem); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up { animation: fade-in-up 0.4s ease-out forwards; }

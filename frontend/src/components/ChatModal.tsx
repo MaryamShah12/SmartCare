@@ -22,40 +22,63 @@ const ChatModal: React.FC<ChatModalProps> = ({ appointmentId, userType, userId, 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    console.log('🔌 Joining session for appointment:', appointmentId);
     
-    socketService.joinChat(appointmentId);
+    // joining the session here
+    socketService.joinSession(appointmentId);
+
+    const handleJoinedSession = (data: { session_id: string }) => {
+      console.log('✅ Joined session:', data.session_id);
+    };
+
+    const handlePreviousMessages = (data: { messages: ChatMessage[] }) => {
+      console.log('📩 Previous messages received:', data.messages.length);
+      setMessages(data.messages);
+    };
+
+    const handleReceiveMessage = (message: any) => {
+      console.log('💬💬💬 Received message in ChatModal:', message);
+      
+      
+      setMessages(prev => {
+        
+        const exists = prev.find(m => m.id === message.id);
+        if (exists) {
+          console.log('⚠️ Message already exists, skipping');
+          return prev;
+        }
+        
+        const newMessage = {
+          id: message.id,
+          sender_type: message.sender_type,
+          message: message.message,
+          sent_at: message.sent_at
+        };
+        
+        console.log('➕ Adding new message to state:', newMessage);
+        return [...prev, newMessage];
+      });
+    };
+
+    const handleChatEnded = (data: { appointment_id: number }) => {
+      console.log('🔚 Chat ended');
+      setChatEnded(true);
+    };
 
     
-    if (socketService.socket) {
-        socketService.socket.off('previous_messages');
-        socketService.socket.off('new_message');
-        socketService.socket.off('chat_ended');
-    }
-
-    
-    socketService.onPreviousMessages((data: { messages: ChatMessage[] }) => {
-        setMessages(data.messages);
-    });
-
-    
-    socketService.onNewMessage((message: ChatMessage) => {
-        setMessages(prev => [...prev, message]);
-    });
-
-    
-    socketService.onChatEnded((data: { appointmentId: number }) => {
-        setChatEnded(true);
-    });
+    socketService.onJoinedSession(handleJoinedSession);
+    socketService.onPreviousMessages(handlePreviousMessages);
+    socketService.onReceiveMessage(handleReceiveMessage);
+    socketService.onChatEnded(handleChatEnded);
 
     return () => {
-        
-        if (socketService.socket) {
-            socketService.socket.off('previous_messages');
-            socketService.socket.off('new_message');
-            socketService.socket.off('chat_ended');
-        }
+      console.log('🧹 ChatModal cleanup');
+      socketService.off('joined-session');
+      socketService.off('previous_messages');
+      socketService.off('receive-message');
+      socketService.off('chat_ended');
     };
-}, [appointmentId]);
+  }, [appointmentId]);
 
   useEffect(() => {
     scrollToBottom();
@@ -67,7 +90,8 @@ const ChatModal: React.FC<ChatModalProps> = ({ appointmentId, userType, userId, 
 
   const sendMessage = () => {
     if (newMessage.trim() && !chatEnded) {
-      socketService.sendMessage(appointmentId, newMessage, userType, userId);
+      console.log('📤 Sending message:', newMessage);
+      socketService.sendMessageToSession(appointmentId, newMessage, userType, userId);
       setNewMessage('');
     }
   };

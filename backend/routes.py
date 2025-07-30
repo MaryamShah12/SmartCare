@@ -358,7 +358,7 @@ def get_doctor_appointments():
         if not doctor:
             return jsonify({"error": "Doctor not found"}), 404
 
-        # JOIN appointment → patient → user
+    
         rows = (
             db.session.query(Appointment, Patient, User)
             .join(Patient, Appointment.patient_id == Patient.id)
@@ -447,33 +447,46 @@ def _handle_appointment(appointment_id, new_status):
         try:
             from app import socketio
             
-            # Get patient info with detailed logging
+            # Get patient info
             patient = Patient.query.get(appointment.patient_id)
             if patient:
+                # Use user_id directly for consistency with socket_handlers.py
                 room_name = f"patient_{patient.user_id}"
-                print(f"=== WEBSOCKET EMISSION DEBUG ===")
-                print(f"Appointment ID: {appointment_id}")
-                print(f"Patient ID: {appointment.patient_id}")
-                print(f"Patient User ID: {patient.user_id}")
-                print(f"Patient Name: {patient.name}")
-                print(f"Emitting to room: {room_name}")
-                print(f"Status: {new_status}")
-                print(f"Chat Active: {appointment.chat_active if new_status == 'accepted' else False}")
-                print("================================")
                 
-                socketio.emit('appointment_updated', {
+                emit_data = {
                     'appointment_id': appointment_id,
                     'status': new_status,
                     'chat_active': appointment.chat_active if new_status == 'accepted' else False
-                }, room=room_name)
+                }
                 
-                print(f"✅ WebSocket notification sent to {room_name}")
-            else:
-                print("❌ Patient not found for WebSocket emission")
+                print(f"=== EMITTING TO PATIENT ===")
+                print(f"Room: {room_name}")
+                print(f"Data: {emit_data}")
+                print(f"Patient ID: {patient.id}, User ID: {patient.user_id}")
+                
+                # First emit to all connected clients for debugging
+                socketio.emit('debug_appointment_updated', {
+                    'target_room': room_name,
+                    'data': emit_data,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+                # Then emit to the specific room
+                socketio.emit('appointment_updated', emit_data, room=room_name)
+                print(f"✅ Emission complete")
+                
+                # Also emit to the specific socket ID if we can find it
+                try:
+                    from socket_handlers import get_patient_socket_id
+                    socket_id = get_patient_socket_id(patient.user_id)
+                    if socket_id:
+                        print(f"🎯 Emitting directly to socket ID: {socket_id}")
+                        socketio.emit('appointment_updated', emit_data, room=socket_id)
+                except Exception as sid_error:
+                    print(f"⚠️ Could not emit to socket ID: {sid_error}")
+                
         except Exception as ws_error:
             print(f"❌ WebSocket error: {ws_error}")
-            import traceback
-            traceback.print_exc()
         
         return jsonify({"message": f"Appointment {new_status} successfully"}), 200
         
@@ -692,14 +705,13 @@ def book_appointment():
             return jsonify({"error": "Patient not found"}), 404
 
         data = request.form
-        doctor_id        = int(data.get('doctor_id'))
+        doctor_id = int(data.get('doctor_id'))
         appointment_type = data.get('appointment_type')
-        start_time_str   = data.get('start_time')   
-        end_time_str     = data.get('end_time')     
-        symptoms         = data.get('symptoms')
-        report_file      = request.files.get('report_file')
+        start_time_str = data.get('start_time')   # Now expects ISO string
+        end_time_str = data.get('end_time')       # Now expects ISO string
+        symptoms = data.get('symptoms')
+        report_file = request.files.get('report_file')
 
-        
         if not all([doctor_id, appointment_type, start_time_str, end_time_str, symptoms]):
             return jsonify({"error": "Missing required fields"}), 400
 
@@ -710,22 +722,19 @@ def book_appointment():
         if appointment_type == 'emergency' and not doctor.instant_available:
             return jsonify({"error": "Doctor not available for instant appointments"}), 403
 
-        
+        # Parse ISO datetime strings directly
         try:
-            day, slot = start_time_str.split(' ', 1)
-            start_h, start_m = map(int, slot.split('-')[0].split(':'))
-            end_h, end_m     = map(int, slot.split('-')[1].split(':'))
-            now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            start_dt = now + timedelta(hours=start_h, minutes=start_m)
-            end_dt   = now + timedelta(hours=end_h, minutes=end_m)
-        except Exception:
-            return jsonify({"error": "Invalid slot format"}), 400
+            start_dt = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+        except Exception as e:
+            print(f"DateTime parsing error: {e}")
+            return jsonify({"error": "Invalid datetime format"}), 400
 
-        
+        # Validate times
         if start_dt >= end_dt:
             return jsonify({"error": "End time must be after start time"}), 400
 
-        
+        # Check for overlaps
         overlap = Appointment.query.filter(
             Appointment.doctor_id == doctor_id,
             Appointment.status == 'accepted',
@@ -735,7 +744,7 @@ def book_appointment():
         if overlap:
             return jsonify({"error": "Time slot already taken"}), 400
 
-        
+        # Handle file upload
         report_path = None
         if report_file and report_file.filename:
             if not report_file.filename.lower().endswith(('.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png')):
@@ -745,7 +754,7 @@ def book_appointment():
             report_file.save(file_path)
             report_path = fn
 
-        
+        # Create appointment
         appointment = Appointment(
             patient_id=patient.id,
             doctor_id=doctor_id,
@@ -758,7 +767,9 @@ def book_appointment():
         )
         db.session.add(appointment)
         db.session.commit()
+        
         return jsonify({"message": "Appointment booked successfully"}), 201
+        
     except Exception as e:
         db.session.rollback()
         print("Booking error:", e)
@@ -799,6 +810,86 @@ def get_patient_appointments():
     except Exception as e:
         print("Patient appointments error:", e)
         return jsonify({"error": "Failed to fetch appointments"}), 500
+    
+
+@bp.route('/patient/doctor-profile/<int:doctor_id>', methods=['GET'])
+@jwt_required()
+def get_doctor_profile(doctor_id):
+    """Get detailed doctor profile for patients"""
+    try:
+        user_id = int(get_jwt_identity())
+        user = User.query.get(user_id)
+        if not user or user.role != 'patient':
+            return jsonify({"error": "Patient access required"}), 403
+
+        doctor = Doctor.query.get_or_404(doctor_id)
+        if not doctor.is_approved or not doctor.user.is_active:
+            return jsonify({"error": "Doctor not available"}), 404
+
+        doctor_data = {
+            "id": doctor.id,
+            "name": doctor.name,
+            "specialization": doctor.specialization,
+            "instant_available": doctor.instant_available,
+            "is_active": doctor.user.is_active,
+            "photo": doctor.photo,
+            "availability": json.loads(doctor.availability) if doctor.availability else {},
+            "pricing": doctor.pricing or 0.0,
+            # You can add more fields like rating, experience, etc.
+            "email": doctor.user.email,
+            "experience": "5+ years",  # You can add this field to Doctor model
+            "rating": 4.8,  # You can calculate this from reviews
+            "location": "Karachi, Pakistan"  # Add this field to Doctor model if needed
+        }
+        
+        return jsonify({"doctor": doctor_data}), 200
+        
+    except Exception as e:
+        print(f"Error fetching doctor profile: {e}")
+        return jsonify({"error": "Failed to fetch doctor profile"}), 500
+
+@bp.route('/patient/doctor-schedule/<int:doctor_id>', methods=['GET'])
+@jwt_required()
+def get_doctor_schedule(doctor_id):
+    """Get doctor's accepted appointments for schedule display"""
+    try:
+        user_id = int(get_jwt_identity())
+        user = User.query.get(user_id)
+        if not user or user.role != 'patient':
+            return jsonify({"error": "Patient access required"}), 403
+
+        doctor = Doctor.query.get_or_404(doctor_id)
+        if not doctor.is_approved:
+            return jsonify({"error": "Doctor not available"}), 404
+
+        # Get accepted appointments for the next 14 days
+        from datetime import datetime, timedelta
+        start_date = datetime.utcnow()
+        end_date = start_date + timedelta(days=14)
+        
+        appointments = Appointment.query.filter(
+            Appointment.doctor_id == doctor_id,
+            Appointment.status == 'accepted',
+            Appointment.start_time >= start_date,
+            Appointment.start_time <= end_date
+        ).all()
+        
+        appointments_data = [
+            {
+                "id": apt.id,
+                "start_time": apt.start_time.isoformat(),
+                "end_time": apt.end_time.isoformat(),
+                "status": apt.status,
+                "appointment_type": apt.appointment_type
+            }
+            for apt in appointments
+        ]
+        
+        return jsonify({"appointments": appointments_data}), 200
+        
+    except Exception as e:
+        print(f"Error fetching doctor schedule: {e}")
+        return jsonify({"error": "Failed to fetch doctor schedule"}), 500
 
 @bp.route('/patient/profile', methods=['GET', 'POST'])
 @jwt_required()

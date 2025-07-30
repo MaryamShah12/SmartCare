@@ -1,11 +1,19 @@
-# socket_handlers.py – Simplified connection handling
 from flask import request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_jwt_extended import decode_token
 from models import db, User, Doctor, Patient, Appointment, ChatMessage
 from datetime import datetime
-import time
-import threading
+
+
+patient_socket_map = {}
+
+def get_patient_socket_id(user_id):
+    """Get socket ID for a patient user_id"""
+    return patient_socket_map.get(str(user_id))
+
+def get_session_id(patient_id, doctor_id):
+    """Generate consistent session ID for patient-doctor pair"""
+    return f"session_{min(patient_id, doctor_id)}_{max(patient_id, doctor_id)}"
 
 def init_socket_handlers(socketio, app, online_doctors, online_patients):
 
@@ -28,132 +36,67 @@ def init_socket_handlers(socketio, app, online_doctors, online_patients):
 
                 print(f"✅ User authenticated: {user.email} (Role: {user.role})")
                 
+                
                 if user.role == 'doctor':
                     doctor = Doctor.query.filter_by(user_id=user_id).first()
                     if doctor:
-                        doctor_room = f'doctor_{doctor.id}'
-                        join_room(doctor_room)
-                        print(f"✅ Doctor {doctor.name} joined room: {doctor_room}")
-
+                        room_name = f'doctor_{doctor.id}'
+                        join_room(room_name)
+                        print(f"✅ Doctor joined room: {room_name}")
                 elif user.role == 'patient':
+                    
                     patient = Patient.query.filter_by(user_id=user_id).first()
                     if patient:
-                        patient_room = f'patient_{user_id}'  # Use user_id consistently
-                        join_room(patient_room)
-                        print(f"✅ Patient {patient.name} joined room: {patient_room}")
-                        print(f"🔍 Socket {request.sid} is now in room {patient_room}")
+                        
+                        room_name = f'patient_{user_id}'
+                        join_room(room_name)
+                        
+                        
+                        patient_socket_map[str(user_id)] = request.sid
+                        print(f"✅ Patient joined room: {room_name} (user_id: {user_id}, patient_id: {patient.id}, socket_id: {request.sid})")
+                        print(f"📝 Updated patient_socket_map: {patient_socket_map}")
+                        
+                        
+                        emit('room_join_confirmation', {
+                            'room': room_name,
+                            'user_id': user_id,
+                            'patient_id': patient.id,
+                            'socket_id': request.sid
+                        })
 
             return True
         except Exception as e:
-            print(f"❌ Connection error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Connection error: {e}")
             return False
-    
-    @socketio.on('join_room')
-    def handle_join_room(data):
-        room = data.get('room')
-        if room:
-           join_room(room)
-           print(f"Client joined room: {room}")
 
-    @socketio.on('verify_room_membership')
-    def handle_verify_room_membership(data):
-        room = data.get('room')
-        print(f"🔍 Verifying room membership for {request.sid} in room {room}")
-        
-        
-        room_clients = socketio.server.manager.get_participants(socketio.server.eio.namespace, room)
-        print(f"📋 Clients in room {room}: {room_clients}")
-        
-        is_in_room = request.sid in room_clients
-        print(f"✅ Socket {request.sid} in room {room}: {is_in_room}")
-        
-        emit('room_membership_verified', {
-            'room': room,
-            'is_member': is_in_room,
-            'socket_id': request.sid
-        })
-    
-    @socketio.on('disconnect')
-    def handle_disconnect():
-        print(f"🔴 Client disconnected: {request.sid}")
-
-    @socketio.on('verify_room')
-    def handle_verify_room(data):
-        room = data.get('room')
-        print(f"🔍 Client {request.sid} requesting verification for room: {room}")
-        emit('room_verified', {'room': room, 'status': 'connected'})    
-
-    @socketio.on('instant_appointment_request')
-    def handle_instant_appointment(data):
+    @socketio.on('join-session')
+    def handle_join_session(data):
         try:
             with app.app_context():
                 appointment_id = data.get('appointment_id')
-                doctor_id = data.get('doctor_id')
-
+                
                 appointment = Appointment.query.get(appointment_id)
-                if appointment:
-                    socketio.emit(
-                        'new_appointment_request',
-                        {
-                            'appointment': {
-                                'id': appointment.id,
-                                'patient_name': appointment.patient.name,
-                                'symptoms': appointment.symptoms,
-                                'appointment_type': appointment.appointment_type,
-                                'start_time': appointment.start_time.isoformat(),
-                                'patient': {
-                                    'id': appointment.patient.id,
-                                    'name': appointment.patient.name,
-                                    'age': appointment.patient.age,
-                                    'gender': appointment.patient.gender,
-                                    'medical_history': appointment.patient.medical_history
-                                }
-                            }
-                        },
-                        room=f'doctor_{doctor_id}'
-                    )
-        except Exception as e:
-            print(f"Error handling instant appointment: {e}")
+                if not appointment:
+                    emit('error', {'message': 'Appointment not found'})
+                    return
 
-    @socketio.on('appointment_response')
-    def handle_appointment_response(data):
-        try:
-            with app.app_context():
-                appointment_id = data.get('appointment_id')
-                action = data.get('action')  
+                
+                patient = Patient.query.get(appointment.patient_id)
+                doctor = Doctor.query.get(appointment.doctor_id)
+                
+                if not patient or not doctor:
+                    emit('error', {'message': 'Patient or doctor not found'})
+                    return
 
-                appointment = Appointment.query.get(appointment_id)
-                if appointment:
-                    appointment.status = 'accepted' if action == 'accept' else 'rejected'
-                    if action == 'accept' and appointment.appointment_type == 'instant':
-                        appointment.chat_active = True
+                session_id = get_session_id(patient.id, doctor.id)
+                join_room(session_id)
+                
+                print(f"✅ User joined session: {session_id} for appointment: {appointment_id}")
+                emit('joined-session', {'session_id': session_id})
 
-                    db.session.commit()
-
-                    socketio.emit(
-                        'appointment_updated',
-                        {
-                            'appointment_id': appointment_id,
-                            'status': appointment.status,
-                            'chat_active': appointment.chat_active
-                        },
-                        room=f'patient_{appointment.patient_id}'
-                    )
-        except Exception as e:
-            print(f"Error handling appointment response: {e}")
-
-    @socketio.on('join_chat')
-    def handle_join_chat(data):
-        appointment_id = data.get('appointment_id')
-        join_room(f'chat_{appointment_id}')
-
-        with app.app_context():
-            messages = ChatMessage.query.filter_by(appointment_id=appointment_id).order_by(ChatMessage.sent_at).all()
-            emit(
-                'previous_messages',
-                {
+                
+                messages = ChatMessage.query.filter_by(appointment_id=appointment_id).order_by(ChatMessage.sent_at).all()
+                emit('previous_messages', {
                     'messages': [
                         {
                             'id': msg.id,
@@ -164,10 +107,13 @@ def init_socket_handlers(socketio, app, online_doctors, online_patients):
                         }
                         for msg in messages
                     ]
-                }
-            )
+                })
 
-    @socketio.on('send_message')
+        except Exception as e:
+            print(f"Error joining session: {e}")
+            emit('error', {'message': 'Failed to join session'})
+
+    @socketio.on('send-message')
     def handle_send_message(data):
         try:
             with app.app_context():
@@ -181,6 +127,7 @@ def init_socket_handlers(socketio, app, online_doctors, online_patients):
                     emit('error', {'message': 'Chat not active'})
                     return
 
+                
                 chat_message = ChatMessage(
                     appointment_id=appointment_id,
                     sender_type=sender_type,
@@ -190,16 +137,23 @@ def init_socket_handlers(socketio, app, online_doctors, online_patients):
                 db.session.add(chat_message)
                 db.session.commit()
 
-                socketio.emit(
-                    'new_message',
-                    {
-                        'id': chat_message.id,
-                        'sender_type': sender_type,
-                        'message': message_text,
-                        'sent_at': chat_message.sent_at.isoformat()
-                    },
-                    room=f'chat_{appointment_id}'
-                )
+                
+                patient = Patient.query.get(appointment.patient_id)
+                doctor = Doctor.query.get(appointment.doctor_id)
+                session_id = get_session_id(patient.id, doctor.id)
+
+                
+                socketio.emit('receive-message', {
+                    'id': chat_message.id,
+                    'sender_type': sender_type,
+                    'sender_id': sender_id,
+                    'message': message_text,
+                    'sent_at': chat_message.sent_at.isoformat(),
+                    'timestamp': chat_message.sent_at.isoformat()
+                }, room=session_id)
+
+                print(f"💬 Message sent to session {session_id}: {message_text[:50]}...")
+
         except Exception as e:
             print(f"Error sending message: {e}")
             emit('error', {'message': 'Failed to send message'})
@@ -209,20 +163,60 @@ def init_socket_handlers(socketio, app, online_doctors, online_patients):
         try:
             with app.app_context():
                 appointment_id = data.get('appointment_id')
-
                 appointment = Appointment.query.get(appointment_id)
+                
                 if appointment:
                     appointment.chat_active = False
                     appointment.chat_ended_at = datetime.utcnow()
                     db.session.commit()
 
-                    socketio.emit(
-                        'chat_ended',
-                        {
-                            'appointment_id': appointment_id,
-                            'ended_at': appointment.chat_ended_at.isoformat()
-                        },
-                        room=f'chat_{appointment_id}'
-                    )
+                    
+                    patient = Patient.query.get(appointment.patient_id)
+                    doctor = Doctor.query.get(appointment.doctor_id)
+                    session_id = get_session_id(patient.id, doctor.id)
+
+                    socketio.emit('chat_ended', {
+                        'appointment_id': appointment_id,
+                        'ended_at': appointment.chat_ended_at.isoformat()
+                    }, room=session_id)
+
         except Exception as e:
             print(f"Error ending chat: {e}")
+    
+    @socketio.on('test_connection')
+    def handle_test_connection(data):
+        user_id = data.get('user_id')
+        role = data.get('role')
+    
+        if role == 'patient':
+            room_name = f'patient_{user_id}'
+            join_room(room_name)  
+            
+            with app.app_context():
+                patient = Patient.query.filter_by(user_id=user_id).first()
+                patient_info = {
+                    'patient_id': patient.id if patient else None,
+                    'user_id': user_id
+                }
+                print(f"🧪 Test connection patient info: {patient_info}")
+            
+            emit('connection_test_result', [
+                {
+                    'joined_room': room_name,
+                    'message': f'Successfully joined {room_name}',
+                    'patient_info': patient_info if 'patient_info' in locals() else None
+                }
+            ])
+            print(f"🧪 Test: Patient {user_id} joined room {room_name}")
+
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        print(f"🔴 Client disconnected: {request.sid}")
+        
+        
+        for user_id, socket_id in list(patient_socket_map.items()):
+            if socket_id == request.sid:
+                del patient_socket_map[user_id]
+                print(f"🗑️ Removed patient socket mapping for user_id: {user_id}")
+                print(f"📝 Updated patient_socket_map: {patient_socket_map}")
+                break

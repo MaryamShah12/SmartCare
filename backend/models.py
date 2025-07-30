@@ -57,7 +57,7 @@ class Appointment(db.Model):
     report_file = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # now added 
+    
     chat_active = db.Column(db.Boolean, default=False)
     chat_ended_at = db.Column(db.DateTime, nullable=True)
 

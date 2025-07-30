@@ -84,7 +84,7 @@ app.register_blueprint(auth_bp)
 from socket_handlers import init_socket_handlers
 init_socket_handlers(socketio, app, {}, {})
 
-# Print all registered routes for debugging
+
 print("\n=== REGISTERED ROUTES ===")
 for rule in app.url_map.iter_rules():
     print(f"{rule.endpoint}: {rule.rule} [{', '.join(rule.methods)}]")

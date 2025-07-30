@@ -1,17 +1,17 @@
-import React, { useState, useEffect } from 'react'; // <-- added useEffect import
+import React, { useState, useEffect } from 'react'; 
 import { useNavigate } from 'react-router-dom';
 import { GlobeAltIcon, UserGroupIcon, HeartIcon } from '@heroicons/react/24/outline';
 import PatientSignupForm from '../components/PatientSignupForm';
 import DoctorSignupForm from '../components/DoctorSignupForm';
 import LoginForm from '../components/LoginForm';
 import { PatientSignupData, LoginData } from '../types';
-import socketService from '../services/socketService'; // <-- used by new effect
+import socketService from '../services/socketService'; 
 
 const LandingPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'patient' | 'doctor' | 'login'>('patient');
   const navigate = useNavigate();
 
-  // ---- NEW: handle browser refresh / close ----
+  
   useEffect(() => {
     const handleBeforeUnload = () => {
       socketService.logout?.();
@@ -22,7 +22,7 @@ const LandingPage: React.FC = () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
-  // --------------------------------------------
+  
 
   const handlePatientSignup = async (data: PatientSignupData) => {
     try {
@@ -55,7 +55,7 @@ const LandingPage: React.FC = () => {
         if (res.ok) {
             localStorage.setItem(`${json.role}_token`, json.access_token);
             localStorage.setItem('role', json.role);
-            localStorage.setItem('user_id', json.user_id); // ADD THIS LINE
+            localStorage.setItem('user_id', json.user_id); 
             if (json.role === 'admin') navigate('/admin');
             else if (json.role === 'doctor') navigate('/doctor');
             else if (json.role === 'patient') navigate('/patient');
